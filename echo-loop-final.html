@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ECHO LOOP</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #080c1a; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; font-family: 'Press Start 2P', monospace; overflow: hidden; }
+  #ui { display: flex; gap: 40px; margin-bottom: 10px; align-items: center; }
+  .stat { color: #0ff; font-size: 9px; text-shadow: 0 0 8px #0ff; }
+  .stat span { color: #fff; }
+  #title { color: #ff4466; font-size: 14px; text-shadow: 0 0 16px #ff4466; letter-spacing: 4px; margin-bottom: 6px; }
+  canvas { border: 2px solid #0ff; box-shadow: 0 0 20px #0ff, 0 0 40px rgba(0,255,255,0.2); image-rendering: pixelated; display: block; }
+  #overlay { position: absolute; display: none; flex-direction: column; align-items: center; justify-content: center; gap: 16px; pointer-events: none; width: 100%; height: 100%; }
+  #overlay h1 { font-family: 'Press Start 2P', monospace; color: #ff4466; font-size: 22px; text-shadow: 0 0 20px #ff4466; text-align: center; line-height: 1.6; }
+  #overlay p { font-family: 'Press Start 2P', monospace; color: #0ff; font-size: 8px; text-align: center; line-height: 2; max-width: 300px; text-shadow: 0 0 8px #0ff; }
+  #overlay .btn { font-family: 'Press Start 2P', monospace; font-size: 10px; padding: 12px 24px; background: transparent; color: #ff4466; border: 2px solid #ff4466; cursor: pointer; pointer-events: all; text-shadow: 0 0 8px #ff4466; box-shadow: 0 0 12px #ff4466; transition: all 0.15s; }
+  #overlay .btn:hover { background: #ff4466; color: #080c1a; }
+  #loop-flash { position: absolute; width: 100%; height: 100%; background: rgba(0,255,255,0.15); pointer-events: none; opacity: 0; transition: opacity 0.1s; top:0; left:0; }
+  #timer-bar-wrap { width: 100%; height: 6px; background: #111; border: 1px solid #0ff3; margin-top: 6px; }
+  #timer-bar { height: 100%; background: linear-gradient(90deg, #0ff, #ff4466); box-shadow: 0 0 8px #0ff; transition: width 0.05s linear; }
+  #game-wrap { display: flex; flex-direction: column; align-items: center; width: 100%; padding: 8px; }
+  #canvas-wrap { position: relative; }
+  #dpad { display: none; position: relative; width: 150px; height: 150px; margin-top: 14px; flex-shrink: 0; }
+  .dpad-btn { position: absolute; width: 48px; height: 48px; background: rgba(0,255,255,0.08); border: 2px solid rgba(0,255,255,0.35); border-radius: 8px; display: flex; align-items: center; justify-content: center; color: #0ff; font-size: 18px; user-select: none; -webkit-user-select: none; touch-action: none; transition: background 0.08s; }
+  .dpad-btn:active, .dpad-btn.pressed { background: rgba(0,255,255,0.28); border-color: #0ff; box-shadow: 0 0 10px #0ff; }
+  #btn-up { top: 0; left: 51px; } #btn-down { bottom: 0; left: 51px; } #btn-left { top: 51px; left: 0; } #btn-right { top: 51px; right: 0; }
+  #btn-center { position: absolute; top: 51px; left: 51px; width: 48px; height: 48px; background: rgba(0,255,255,0.04); border: 1px solid rgba(0,255,255,0.1); border-radius: 50%; }
+  @media (pointer: coarse) { #dpad { display: flex; } #ui { gap: 12px; } .stat { font-size: 7px; } }
+</style>
+</head>
+<body>
+<div id="game-wrap">
+  <div id="title">ECHO LOOP</div>
+  <div id="ui">
+    <div class="stat">LOOP <span id="loop-count">1</span></div>
+    <div class="stat">SCORE <span id="score">0</span></div>
+    <div class="stat">GHOSTS <span id="ghost-count">0</span></div>
+    <div class="stat">LIVES <span id="lives">3</span></div>
+  </div>
+  <div id="canvas-wrap">
+    <canvas id="c" width="480" height="360"></canvas>
+    <div id="loop-flash"></div>
+    <div id="overlay">
+      <h1>ECHO<br>LOOP</h1>
+      <p>collect all ★ stars before time runs out<br><br>each loop your ghost appears<br>and replays your moves<br><br>don't touch your echoes!</p>
+      <p style="color:#ff4466;font-size:7px;">WASD / ARROWS or D-PAD</p>
+      <button class="btn" id="start-btn">START GAME</button>
+    </div>
+  </div>
+  <div id="timer-bar-wrap"><div id="timer-bar" style="width:100%"></div></div>
+  <div id="dpad">
+    <div class="dpad-btn" id="btn-up">▲</div>
+    <div class="dpad-btn" id="btn-left">◀</div>
+    <div class="dpad-btn" id="btn-right">▶</div>
+    <div class="dpad-btn" id="btn-down">▼</div>
+    <div id="btn-center"></div>
+  </div>
+</div>
+
+<script>
+// ── AUDIO ──────────────────────────────────────────────────
+let audioCtx = null, bgmPlaying = false, bgmTimeout = null;
+function getAudio() { if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)(); return audioCtx; }
+function resumeAudio() { if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume(); }
+function playTone(freq, type, t, dur, vol=0.12) {
+  const ac = getAudio(), osc = ac.createOscillator(), g = ac.createGain();
+  osc.type = type; osc.frequency.setValueAtTime(freq, t);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.001, t + dur);
+  osc.connect(g); g.connect(ac.destination); osc.start(t); osc.stop(t + dur + 0.01);
+}
+const BGM = [220,261.6,329.6,392,440,392,329.6,261.6];
+function startBGM() {
+  if (bgmPlaying) return; bgmPlaying = true;
+  const ac = getAudio(); let step = 0; const st = 60/140/2;
+  function beat() {
+    if (!bgmPlaying) return;
+    const now = ac.currentTime, note = BGM[step % BGM.length];
+    playTone(note,'square',now,st*0.7,0.055);
+    playTone(note*2,'square',now,st*0.4,0.025);
+    if (step%4===0) playTone(BGM[0]/2,'sawtooth',now,st*1.8,0.07);
+    const buf = ac.createBuffer(1, ac.sampleRate*0.04, ac.sampleRate);
+    const d = buf.getChannelData(0); for(let i=0;i<d.length;i++) d[i]=(Math.random()*2-1)*0.1;
+    const src = ac.createBufferSource(), hg = ac.createGain();
+    src.buffer = buf; hg.gain.setValueAtTime(0.1,now); hg.gain.exponentialRampToValueAtTime(0.001,now+0.04);
+    src.connect(hg); hg.connect(ac.destination); src.start(now);
+    step++; bgmTimeout = setTimeout(beat, st*1000);
+  }
+  beat();
+}
+function stopBGM() { bgmPlaying = false; if (bgmTimeout) clearTimeout(bgmTimeout); }
+function sfxCollect() { const ac=getAudio(),now=ac.currentTime; playTone(880,'square',now,0.08,0.11); playTone(1320,'square',now+0.07,0.08,0.09); }
+function sfxLoop() {
+  const ac=getAudio(),now=ac.currentTime;
+  [261.6,329.6,392,523.2].forEach((f,i)=>playTone(f,'square',now+i*0.04,0.25,0.08));
+  const osc=ac.createOscillator(),g=ac.createGain(); osc.type='sawtooth';
+  osc.frequency.setValueAtTime(80,now); osc.frequency.exponentialRampToValueAtTime(400,now+0.2);
+  g.gain.setValueAtTime(0.09,now); g.gain.exponentialRampToValueAtTime(0.001,now+0.25);
+  osc.connect(g); g.connect(ac.destination); osc.start(now); osc.stop(now+0.3);
+}
+function sfxHit() {
+  const ac=getAudio(),now=ac.currentTime; playTone(220,'sawtooth',now,0.12,0.16); playTone(110,'sawtooth',now+0.1,0.18,0.13);
+  const osc=ac.createOscillator(),g=ac.createGain(); osc.type='square';
+  osc.frequency.setValueAtTime(60,now); osc.frequency.exponentialRampToValueAtTime(30,now+0.25);
+  g.gain.setValueAtTime(0.13,now); g.gain.exponentialRampToValueAtTime(0.001,now+0.28);
+  osc.connect(g); g.connect(ac.destination); osc.start(now); osc.stop(now+0.3);
+}
+function sfxVictory() {
+  const ac=getAudio(),now=ac.currentTime;
+  [523.2,659.3,783.9,1046.5,783.9,1046.5].forEach((f,i)=>playTone(f,'square',now+i*0.12,0.18,0.12));
+  [1200,1600,2000].forEach((f,i)=>playTone(f,'sine',now+0.55+i*0.07,0.15,0.06));
+}
+function sfxGameOver() {
+  stopBGM(); const ac=getAudio(),now=ac.currentTime;
+  [392,349.2,311.1,261.6].forEach((f,i)=>{ playTone(f,'sawtooth',now+i*0.22,0.35,0.13); playTone(f/2,'square',now+i*0.22,0.35,0.07); });
+}
+['keydown','touchstart','mousedown'].forEach(e=>document.addEventListener(e,resumeAudio));
+
+// ── GAME ──────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const W=480, H=360, TILE=16, LOOP_DURATION=7000, SPD=2.5;
+const GHOST_COLORS=['#ff4466','#ffaa00','#aa44ff','#44ff88','#ff88aa'];
+const STAR_POS=[[60,60],[420,60],[60,300],[420,300],[240,60],[60,180],[420,180],[240,300],[150,150],[330,150],[150,210],[330,210],[240,180]];
+
+let state='splash', score=0, loopCount=1, lives=3, loopTimer=0, loopStart=0;
+let player={x:240,y:180,w:14,h:14}, stars=[], ghosts=[], recording=[], keys={}, lastTime=0, invincible=0;
+let splashAlpha=0, splashTimer=0;
+const SPLASH_HOLD=2000, SPLASH_FADE=800;
+
+function initStars() { stars=STAR_POS.map(([x,y])=>({x,y,collected:false,pulse:Math.random()*Math.PI*2})); }
+function resetPlayer() { player.x=240; player.y=180; }
+function startLoop() { resetPlayer(); recording=[]; loopStart=performance.now(); loopTimer=0; }
+
+function startGame() {
+  getAudio(); resumeAudio(); startBGM();
+  score=0; loopCount=1; lives=3; ghosts=[]; initStars(); startLoop(); state='playing';
+  document.getElementById('overlay').style.display='none'; updateUI();
+}
+function updateUI() {
+  document.getElementById('loop-count').textContent=loopCount;
+  document.getElementById('score').textContent=score;
+  document.getElementById('ghost-count').textContent=ghosts.length;
+  document.getElementById('lives').textContent=lives;
+}
+function splashDone() { state='menu'; document.getElementById('overlay').style.display='flex'; }
+function showMenu() { stopBGM(); state='menu'; const ov=document.getElementById('overlay'); ov.style.display='flex'; ov.querySelector('h1').innerHTML='ECHO<br>LOOP'; ov.querySelector('p').innerHTML='collect all ★ stars before time runs out<br><br>each loop your ghost appears<br>and replays your moves<br><br>don\'t touch your echoes!'; ov.querySelector('.btn').textContent='START GAME'; ov.querySelector('.btn').onclick=startGame; }
+function flashLoop() { const f=document.getElementById('loop-flash'); f.style.opacity='1'; setTimeout(()=>f.style.opacity='0',120); }
+function rectOverlap(a,b) { return a.x<b.x+b.w&&a.x+a.w>b.x&&a.y<b.y+b.h&&a.y+a.h>b.y; }
+
+document.addEventListener('keydown', e=>{
+  keys[e.key]=true;
+  if(state==='splash'){splashDone();return;}
+  if(state==='menu'&&(e.key==='Enter'||e.key===' '))startGame();
+  if(state==='gameover'&&(e.key==='Enter'||e.key===' '))showMenu();
+  e.preventDefault();
+});
+document.addEventListener('keyup',e=>{keys[e.key]=false;});
+canvas.addEventListener('click',()=>{if(state==='splash')splashDone();});
+document.getElementById('start-btn').addEventListener('click',startGame);
+document.getElementById('start-btn').addEventListener('touchstart',e=>{e.preventDefault();startGame();},{passive:false});
+
+function gameLoop(ts) {
+  const dt=Math.min(ts-lastTime,50); lastTime=ts;
+  if(state==='splash') updateSplash(dt);
+  if(state==='playing') update(dt,ts);
+  render(ts);
+  requestAnimationFrame(gameLoop);
+}
+
+function updateSplash(dt) {
+  splashTimer+=dt;
+  const total=SPLASH_FADE+SPLASH_HOLD+SPLASH_FADE;
+  if(splashTimer>=total){splashDone();return;}
+  if(splashTimer<SPLASH_FADE) splashAlpha=splashTimer/SPLASH_FADE;
+  else if(splashTimer<SPLASH_FADE+SPLASH_HOLD) splashAlpha=1;
+  else splashAlpha=1-(splashTimer-SPLASH_FADE-SPLASH_HOLD)/SPLASH_FADE;
+}
+
+function update(dt,ts) {
+  loopTimer=ts-loopStart;
+  document.getElementById('timer-bar').style.width=((1-Math.min(loopTimer/LOOP_DURATION,1))*100)+'%';
+  if(invincible>0) invincible-=dt;
+  let dx=0,dy=0;
+  if(keys['ArrowLeft']||keys['a']||keys['A'])dx-=1;
+  if(keys['ArrowRight']||keys['d']||keys['D'])dx+=1;
+  if(keys['ArrowUp']||keys['w']||keys['W'])dy-=1;
+  if(keys['ArrowDown']||keys['s']||keys['S'])dy+=1;
+  if(dx!==0&&dy!==0){dx*=0.707;dy*=0.707;}
+  player.x=Math.max(4,Math.min(W-4-player.w, player.x+dx*SPD*dt/16));
+  player.y=Math.max(4,Math.min(H-4-player.h, player.y+dy*SPD*dt/16));
+  recording.push({x:player.x,y:player.y,t:loopTimer});
+  for(let s of stars) {
+    if(!s.collected&&rectOverlap({x:player.x,y:player.y,w:player.w,h:player.h},{x:s.x-6,y:s.y-6,w:12,h:12})) {
+      s.collected=true; score+=10*loopCount; sfxCollect(); updateUI();
+    }
+  }
+  for(let g of ghosts) {
+    let best=0;
+    for(let i=0;i<g.rec.length;i++) if(g.rec[i].t<=loopTimer) best=i;
+    g.playhead=best;
+  }
+  if(invincible<=0) {
+    for(let g of ghosts) {
+      const f=g.rec[g.playhead];
+      if(f&&rectOverlap({x:player.x+2,y:player.y+2,w:player.w-4,h:player.h-4},{x:f.x+2,y:f.y+2,w:player.w-4,h:player.h-4})) { hitPlayer(); break; }
+    }
+  }
+  const allDone=stars.every(s=>s.collected);
+  if(loopTimer>=LOOP_DURATION||allDone) endLoop(allDone);
+}
+
+function hitPlayer() {
+  lives--; invincible=1500; sfxHit(); updateUI();
+  if(lives<=0) gameOver();
+}
+
+function endLoop(allDone) {
+  flashLoop();
+  if(allDone){score+=50;sfxVictory();}else{sfxLoop();}
+  ghosts.push({rec:[...recording],playhead:0,color:GHOST_COLORS[ghosts.length%GHOST_COLORS.length]});
+  loopCount++; initStars(); updateUI(); startLoop();
+}
+
+function gameOver() {
+  state='gameover'; sfxGameOver();
+  const ov=document.getElementById('overlay'); ov.style.display='flex';
+  ov.querySelector('h1').innerHTML='GAME<br>OVER';
+  ov.querySelector('p').innerHTML=`score: ${score}<br>survived ${loopCount-1} loops<br>ghosts: ${ghosts.length}<br><br>press enter or tap below`;
+  ov.querySelector('.btn').textContent='TRY AGAIN'; ov.querySelector('.btn').onclick=startGame;
+}
+
+// ── RENDER ────────────────────────────────────────────────
+function render(ts) {
+  ctx.clearRect(0,0,W,H);
+  ctx.strokeStyle='rgba(0,255,255,0.05)'; ctx.lineWidth=1;
+  for(let x=0;x<W;x+=TILE){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=TILE){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  if(state==='splash'){drawSplash();return;}
+  ctx.strokeStyle='#0ff';ctx.lineWidth=2;ctx.shadowColor='#0ff';ctx.shadowBlur=8;
+  ctx.strokeRect(2,2,W-4,H-4);ctx.shadowBlur=0;
+  if(state==='playing'||state==='gameover') {
+    for(let g of ghosts) {
+      const f=g.rec[g.playhead]; if(!f) continue;
+      ctx.globalAlpha=0.07;
+      for(let i=0;i<g.rec.length;i+=4){const r=g.rec[i];ctx.fillStyle=g.color;ctx.fillRect(r.x+4,r.y+4,6,6);}
+      ctx.globalAlpha=0.75;ctx.fillStyle=g.color;ctx.shadowColor=g.color;ctx.shadowBlur=12;
+      ctx.fillRect(f.x,f.y,player.w,player.h);ctx.globalAlpha=1;ctx.shadowBlur=0;
+      ctx.fillStyle='#080c1a';ctx.fillRect(f.x+2,f.y+3,3,3);ctx.fillRect(f.x+9,f.y+3,3,3);
+      ctx.fillStyle='#fff';ctx.fillRect(f.x+3,f.y+4,1,1);ctx.fillRect(f.x+10,f.y+4,1,1);
+    }
+    for(let s of stars) {
+      if(!s.collected){s.pulse+=0.05;ctx.save();ctx.shadowColor='#ffdd00';ctx.shadowBlur=6+Math.sin(s.pulse)*3;ctx.fillStyle='#ffdd00';drawStar(s.x,s.y,5,6,3);ctx.restore();}
+    }
+    if(!(invincible>0&&Math.floor(invincible/100)%2===0)){
+      ctx.shadowColor='#0ff';ctx.shadowBlur=16;ctx.fillStyle='#0ff';
+      ctx.fillRect(player.x,player.y,player.w,player.h);ctx.shadowBlur=0;
+      ctx.fillStyle='#080c1a';ctx.fillRect(player.x+2,player.y+3,3,3);ctx.fillRect(player.x+9,player.y+3,3,3);
+      ctx.fillStyle='#fff';ctx.fillRect(player.x+3,player.y+4,1,1);ctx.fillRect(player.x+10,player.y+4,1,1);
+    }
+    ctx.fillStyle='rgba(0,255,255,0.15)';ctx.fillRect(W/2-55,8,110,20);
+    ctx.fillStyle='#0ff';ctx.font='8px "Press Start 2P"';ctx.textAlign='center';
+    ctx.fillText(`LOOP ${loopCount}`,W/2,21);
+    ctx.fillStyle='#ffdd0099';ctx.font='7px "Press Start 2P"';
+    ctx.fillText(`★ ${stars.filter(s=>!s.collected).length} left`,W/2,H-10);
+  }
+}
+
+function drawSplash() {
+  const a=Math.max(0,Math.min(1,splashAlpha));
+  ctx.save();ctx.globalAlpha=a;
+  ctx.fillStyle='#080c1a';ctx.fillRect(0,0,W,H);
+  ctx.strokeStyle='rgba(0,255,255,0.04)';ctx.lineWidth=1;
+  for(let x=0;x<W;x+=16){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
+  for(let y=0;y<H;y+=16){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
+  [[200,52,'#0ff',0.13],[175,45,'#0ff',0.10],[152,38,'#ff4466',0.10]].forEach(([rx,ry,col,ra])=>{
+    ctx.save();ctx.globalAlpha=ra*a;ctx.strokeStyle=col;ctx.lineWidth=1;ctx.shadowColor=col;ctx.shadowBlur=10;
+    ctx.beginPath();ctx.ellipse(W/2,H/2,rx,ry,-0.3,0,Math.PI*2);ctx.stroke();ctx.restore();
+  });
+  [[42,78,'#ff4466'],[405,140,'#ffaa00'],[65,195,'#aa44ff'],[388,68,'#44ff88']].forEach(([gx,gy,col])=>{
+    ctx.save();ctx.globalAlpha=0.5*a;ctx.fillStyle=col;ctx.shadowColor=col;ctx.shadowBlur=10;
+    const s=3;ctx.fillRect(gx,gy+s,s*4,s*4);ctx.fillRect(gx+s,gy,s*2,s);
+    ctx.fillRect(gx,gy+s*4,s,s);ctx.fillRect(gx+s*2,gy+s*4,s,s);
+    ctx.fillStyle='#080c1a';ctx.shadowBlur=0;ctx.fillRect(gx+s,gy+s*2,s,s);ctx.fillRect(gx+s*2,gy+s*2,s,s);
+    ctx.restore();
+  });
+  const F='"Press Start 2P",monospace';
+  ctx.textAlign='center';
+  ctx.font=`56px ${F}`;ctx.fillStyle='#00ffff';ctx.shadowColor='#00ffff';ctx.shadowBlur=20;
+  ctx.fillText('ECHO',W/2,H/2-20);ctx.shadowBlur=36;ctx.fillText('ECHO',W/2,H/2-20);
+  ctx.shadowBlur=0;ctx.strokeStyle='#ffffff22';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(120,H/2);ctx.lineTo(W-120,H/2);ctx.stroke();
+  ctx.font=`56px ${F}`;ctx.fillStyle='#ff4466';ctx.shadowColor='#ff4466';ctx.shadowBlur=20;
+  ctx.fillText('LOOP',W/2,H/2+52);ctx.shadowBlur=36;ctx.fillText('LOOP',W/2,H/2+52);
+  ctx.shadowBlur=0;ctx.font=`8px ${F}`;ctx.fillStyle='rgba(255,255,255,0.35)';
+  ctx.fillText('stuck in a loop',W/2,H/2+85);
+  ctx.strokeStyle='#0ff';ctx.lineWidth=2;ctx.shadowColor='#0ff';ctx.shadowBlur=8;
+  ctx.strokeRect(3,3,W-6,H-6);
+  ctx.strokeStyle='#ff4466';ctx.shadowColor='#ff4466';
+  [[3,3,18,0,0,18],[W-3,3,-18,0,0,18],[3,H-3,18,0,0,-18],[W-3,H-3,-18,0,0,-18]].forEach(([x,y,ax,ay,bx,by])=>{
+    ctx.beginPath();ctx.moveTo(x+ax,y+ay);ctx.lineTo(x,y);ctx.lineTo(x+bx,y+by);ctx.stroke();
+  });
+  ctx.shadowBlur=0;const pulse=0.5+0.5*Math.sin(splashTimer/300);
+  ctx.globalAlpha=pulse*0.5*a;ctx.font=`7px ${F}`;ctx.fillStyle='#0ff';
+  ctx.fillText('press any key or tap to skip',W/2,H-14);
+  ctx.restore();
+}
+
+function drawStar(cx,cy,outerR,innerR,points) {
+  ctx.beginPath();
+  for(let i=0;i<points*2;i++){const r=i%2===0?outerR:innerR,angle=(i/(points*2))*Math.PI*2-Math.PI/2;i===0?ctx.moveTo(cx+Math.cos(angle)*r,cy+Math.sin(angle)*r):ctx.lineTo(cx+Math.cos(angle)*r,cy+Math.sin(angle)*r);}
+  ctx.closePath();ctx.fill();
+}
+
+// ── SCALING ───────────────────────────────────────────────
+function scaleCanvas() {
+  const ui=document.getElementById('ui'),title=document.getElementById('title'),tw=document.getElementById('timer-bar-wrap');
+  const dpadH=window.matchMedia('(pointer: coarse)').matches?168:0;
+  const maxW=window.innerWidth-16, maxH=window.innerHeight-ui.offsetHeight-title.offsetHeight-26-dpadH-32;
+  const scale=Math.min(maxW/W, maxH/H, 1);
+  canvas.style.width=Math.floor(W*scale)+'px'; canvas.style.height=Math.floor(H*scale)+'px';
+  tw.style.width=Math.floor(W*scale)+'px';
+}
+window.addEventListener('resize',scaleCanvas); scaleCanvas();
+
+// ── D-PAD ─────────────────────────────────────────────────
+const dpadMap={'btn-up':'ArrowUp','btn-down':'ArrowDown','btn-left':'ArrowLeft','btn-right':'ArrowRight'};
+Object.entries(dpadMap).forEach(([id,key])=>{
+  const btn=document.getElementById(id); if(!btn)return;
+  const press=e=>{e.preventDefault();keys[key]=true;btn.classList.add('pressed');if(state==='splash')splashDone();};
+  const release=e=>{e.preventDefault();keys[key]=false;btn.classList.remove('pressed');};
+  btn.addEventListener('touchstart',press,{passive:false}); btn.addEventListener('touchend',release,{passive:false});
+  btn.addEventListener('touchcancel',release,{passive:false}); btn.addEventListener('mousedown',press);
+  btn.addEventListener('mouseup',release); btn.addEventListener('mouseleave',release);
+});
+
+requestAnimationFrame(ts=>{lastTime=ts;requestAnimationFrame(gameLoop);});
+</script>
+</body>
+</html>
